@@ -6,12 +6,13 @@ package structs
 import (
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
+	"golang.org/x/exp/maps"
+	"golang.org/x/exp/slices"
+
 	"github.com/hashicorp/nomad/helper"
 )
 
@@ -928,7 +929,7 @@ type CSIVolumeResizeRequest struct {
 }
 
 type CSIVolumeResizeResponse struct {
-	Capacity int64 // bytes
+	CapacityBytes int64
 	QueryMeta
 }
 
