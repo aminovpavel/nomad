@@ -1745,6 +1745,7 @@ func TestCSIVolumeEndpoint_Expand(t *testing.T) {
 			err := srv.RPC("CSIVolume.Expand", &structs.CSIVolumeExpandRequest{
 				VolumeID:             tc.VolumeID,
 				RequestedCapacityMin: 555,
+				Secrets:              map[string]string{"super": "secret"},
 				WriteRequest:         structs.WriteRequest{Region: srv.Region()},
 			}, &resp)
 
