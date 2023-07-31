@@ -1710,7 +1710,7 @@ func TestCSIVolumeEndpoint_Expand(t *testing.T) {
 	t.Log("server started 👍")
 
 	_, fake, _, fakeVolID := testClientWithCSI(t, srv)
-	expectCapacity := int64(1111)
+	expectCapacity := int64(1024)
 	fake.NextControllerExpandVolumeResponse = &cstructs.ClientCSIControllerExpandVolumeResponse{
 		CapacityBytes:         expectCapacity,
 		NodeExpansionRequired: true,
@@ -1720,11 +1720,26 @@ func TestCSIVolumeEndpoint_Expand(t *testing.T) {
 	cases := []struct {
 		Name      string
 		VolumeID  string
+		ModifyReq func(request *structs.CSIVolumeExpandRequest)
+		MaxSize   int64
 		ExpectErr string
 	}{
 		{
 			Name:     "success",
 			VolumeID: fakeVolID,
+		},
+		{
+			Name:     "good max size",
+			VolumeID: fakeVolID,
+			MaxSize:  2000,
+		},
+		{
+			Name:     "max too small",
+			VolumeID: fakeVolID,
+			MaxSize:  2,
+			// this needs to run after the success case,
+			// which should have set a new larger Capacity on the volume.
+			ExpectErr: "max requested capacity (2 B) smaller than current (1.0 kB)",
 		},
 		{
 			Name:      "missing id",
@@ -1744,7 +1759,7 @@ func TestCSIVolumeEndpoint_Expand(t *testing.T) {
 			var resp structs.CSIVolumeExpandResponse
 			err := srv.RPC("CSIVolume.Expand", &structs.CSIVolumeExpandRequest{
 				VolumeID:             tc.VolumeID,
-				RequestedCapacityMin: 555,
+				RequestedCapacityMax: tc.MaxSize,
 				Secrets:              map[string]string{"super": "secret"},
 				WriteRequest:         structs.WriteRequest{Region: srv.Region()},
 			}, &resp)
@@ -1753,8 +1768,15 @@ func TestCSIVolumeEndpoint_Expand(t *testing.T) {
 				must.EqError(t, err, tc.ExpectErr)
 				return
 			}
+
+			// response
 			must.NoError(t, err)
 			test.Eq(t, expectCapacity, resp.CapacityBytes)
+
+			// state
+			vol, err := srv.State().CSIVolumeByID(nil, structs.DefaultNamespace, fakeVolID)
+			must.NoError(t, err)
+			must.Eq(t, vol.Capacity, expectCapacity, must.Sprint("new capacity not set in state"))
 		})
 	}
 
