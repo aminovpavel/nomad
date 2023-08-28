@@ -1272,9 +1272,11 @@ func (v *CSIVolume) expandVolume(vol *structs.CSIVolume, plugin *structs.CSIPlug
 	logger().Info("expanding volume")
 	// This is the real work. The client RPC sends a gRPC to the controller plugin,
 	// then that controller may reach out to cloud APIs, etc.
-	err = v.srv.RPC(method, cReq, cResp)
+	err = v.serializedControllerRPC(plugin.ID, func() error {
+		return v.srv.RPC(method, cReq, cResp)
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to expand volume: %w", err)
 	}
 
 	vol.Capacity = cResp.CapacityBytes
