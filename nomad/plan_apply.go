@@ -5,14 +5,15 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
 
-	metrics "github.com/armon/go-metrics"
+	"github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
-	memdb "github.com/hashicorp/go-memdb"
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-memdb"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/state"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -496,6 +497,11 @@ func evaluatePlan(pool *EvaluatePool, snap *state.StateSnapshot, plan *structs.P
 		return &structs.PlanResult{RefreshIndex: index}, nil
 	}
 
+	//
+	if err := evaluatePlanAllocIndexes(snap, plan); err != nil {
+		return nil, err
+	}
+
 	return evaluatePlanPlacements(pool, snap, plan, logger)
 }
 
@@ -787,4 +793,72 @@ func isValidForDisconnectedNode(plan *structs.Plan, nodeID string) bool {
 	}
 
 	return true
+}
+
+// evaluatePlanAllocIndexes ensures allocation indexes within a job version
+// are unique. It inspects the plan, along with any existing allocations to
+// ensure this, and will return an error when a duplicate is found.
+func evaluatePlanAllocIndexes(stateSnap *state.StateSnapshot, plan *structs.Plan) error {
+
+	// This set will be used to track what allocation names we have. The
+	// allocation name is formed using the jobID, taskgroup name, and alloc
+	// index. We can therefore use this to identify alloc index duplicates and
+	// save the computational overhead of extracting the index from the name.
+	var indexSet map[string]string
+
+	// If the plan includes node allocations, instantiate the set. In the case
+	// there are no node allocations, the plan will only be destructive actions
+	// which will not result in new alloc indexes being generated.
+	if len(plan.NodeAllocation) > 0 {
+		indexSet = make(map[string]string)
+	} else {
+		return nil
+	}
+
+	stateAllocs, err := stateSnap.AllocsByJob(nil, plan.Job.Namespace, plan.Job.ID, false)
+	if err != nil {
+		return err
+	}
+
+	// Iterate the allocations currently stored within state. Any that match
+	// the planned job version, and that are not terminal are considered active
+	// and added to our tracking.
+	for _, alloc := range stateAllocs {
+
+		fmt.Println(fmt.Sprintf("allocs:%s_%v_%s_%s", alloc.ID, alloc.Job.Version, alloc.NodeID, alloc.ClientStatus))
+
+		if alloc.Job.Version == plan.Job.Version && !alloc.TerminalStatus() {
+			indexSet[alloc.GetName()] = alloc.GetID()
+		}
+	}
+
+	// Iterate through the destructive updates and identify any that can be
+	// removed from tracking. The allocation name and ID must be found, to
+	// ensure correct removal. This path is most common when a node goes down
+	// and a plan is generated to replace the failed allocations.
+	for removeME, nodeUpdate := range plan.NodeUpdate {
+		for _, allocUpdate := range nodeUpdate {
+			fmt.Println(fmt.Sprintf("update:%s_%v_%s", allocUpdate.ID, plan.Job.Version, removeME))
+			if allocID, ok := indexSet[allocUpdate.GetName()]; ok && allocID == allocUpdate.GetID() {
+				delete(indexSet, allocUpdate.GetName())
+			}
+		}
+	}
+
+	// Iterate all the node allocations within the plan, and check for any
+	// conflicts. These conflicts can occur due to existing allocations
+	// matching the plan job version, or within the planned addition of
+	// allocations.
+	for removeME, nodeAllocs := range plan.NodeAllocation {
+		for _, nodeAlloc := range nodeAllocs {
+			fmt.Println(fmt.Sprintf("place:%s_%v_%s", nodeAlloc.ID, plan.Job.Version, removeME))
+			if _, ok := indexSet[nodeAlloc.GetName()]; ok {
+				return errors.New("duplicate alloc index found in plan")
+			} else {
+				indexSet[nodeAlloc.GetName()] = nodeAlloc.GetID()
+			}
+		}
+	}
+
+	return nil
 }
